@@ -1,0 +1,6 @@
+jamf-rename-backup-*.json
+jamf-rename-errors.log
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
