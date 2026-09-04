@@ -41,8 +41,25 @@ nothing depends on it.
 ## Requirements
 
 - Python 3.8 or later
-- A Jamf Pro account with read and write access to computer groups, policies and
-  configuration profiles
+- Either an API client, or a Jamf Pro user account, with read and write access to
+  computer groups, policies and configuration profiles
+
+### Authentication
+
+An **API client** is recommended, and is the only option where console login uses
+single sign on, since user credentials cannot be used against the API in that case.
+
+Create one under **Settings > System > API roles and clients**. Add an API role
+granting Create, Read, Update and Delete on Smart Computer Groups, Policies and
+macOS Configuration Profiles, then create a client using that role. Requires Jamf
+Pro 10.49 or later.
+
+An API client also carries only the privileges granted to its role and can be
+revoked without affecting anyone's login, so it is worth using even where local
+accounts still work.
+
+A **username and password** remains available for instances using local Jamf Pro
+accounts.
 
 ## Usage
 

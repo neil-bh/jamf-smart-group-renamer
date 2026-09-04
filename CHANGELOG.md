@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2
+
+- Added API client authentication using a client ID and secret. Where Jamf Pro
+  console login uses single sign on, user credentials cannot be used against the
+  API, so this was previously unusable on those instances ([#2](../../issues/2))
+- The API client is now the default method at startup. Username and password remains
+  available for instances using local Jamf Pro accounts
+- Tokens are renewed automatically when they expire mid run. API client tokens are
+  short lived, so a longer run previously failed partway through with a 401
+
 ## 0.1
 
 First release.

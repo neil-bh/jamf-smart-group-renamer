@@ -24,11 +24,12 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-VERSION = "0.1"
+VERSION = "0.2"
 TOOL_NAME = "Jamf Smart Group Renamer"
 
 CRITERION_FIELDS = ("name", "priority", "and_or", "search_type", "value",
@@ -255,12 +256,21 @@ class JamfError(Exception):
 
 
 class JamfClient:
-    def __init__(self, server_url, username, password):
+    def __init__(self, server_url, credentials):
         self.base_url = server_url.rstrip("/")
         self.context = ssl.create_default_context()
-        self.token = self._request_token(username, password)
+        self.credentials = credentials
+        self.token = self._new_token()
 
-    def _send(self, method, path, body=None, accept="application/json", content_type=None):
+    def _new_token(self):
+        if self.credentials["method"] == "client":
+            return self._request_client_token(self.credentials["client_id"],
+                                              self.credentials["client_secret"])
+        return self._request_token(self.credentials["username"],
+                                   self.credentials["password"])
+
+    def _send(self, method, path, body=None, accept="application/json",
+              content_type=None, retry=True):
         request = urllib.request.Request(f"{self.base_url}{path}", method=method)
         request.add_header("Accept", accept)
         request.add_header("Authorization", f"Bearer {self.token}")
@@ -272,6 +282,12 @@ class JamfClient:
                                         context=self.context) as response:
                 return response.status, response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
+            if error.code == 401 and retry:
+                # Tokens are short lived, particularly for API clients. Renew once
+                # and repeat the request before treating this as a failure.
+                self.token = self._new_token()
+                return self._send(method, path, body=body, accept=accept,
+                                  content_type=content_type, retry=False)
             return error.code, error.read().decode("utf-8", errors="replace")
         except urllib.error.URLError as error:
             raise JamfError(f"Lost contact with the server. {error.reason}")
@@ -287,6 +303,31 @@ class JamfClient:
         except urllib.error.HTTPError as error:
             if error.code == 401:
                 raise JamfError("Authentication failed. Check the username and password.")
+            raise JamfError(f"Authentication failed with status {error.code}.")
+        except urllib.error.URLError as error:
+            raise JamfError(f"Could not reach {self.base_url}. Check the server address. "
+                            f"({error.reason})")
+
+    def _request_client_token(self, client_id, client_secret):
+        payload = urllib.parse.urlencode({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+        }).encode()
+        request = urllib.request.Request(f"{self.base_url}/api/oauth/token", method="POST")
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        request.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(request, data=payload, timeout=30,
+                                        context=self.context) as response:
+                return json.loads(response.read().decode())["access_token"]
+        except urllib.error.HTTPError as error:
+            if error.code in (400, 401):
+                raise JamfError("Authentication failed. Check the client ID and secret, "
+                                "and that the API client is enabled.")
+            if error.code == 404:
+                raise JamfError("This Jamf Pro version does not support API clients. "
+                                "Use a username and password instead.")
             raise JamfError(f"Authentication failed with status {error.code}.")
         except urllib.error.URLError as error:
             raise JamfError(f"Could not reach {self.base_url}. Check the server address. "
@@ -768,11 +809,26 @@ def main():
     if not server_url.startswith("http"):
         server_url = "https://" + server_url
 
-    username = prompt_required("Username: ")
-    password = getpass.getpass(Style.info("Password: "))
+    print()
+    print("  1. API client   (client ID and secret, works with single sign on)")
+    print("  2. User account (username and password)")
+    choice = input(Style.info("\nAuthentication method [1]: ")).strip() or "1"
+
+    if choice == "2":
+        credentials = {
+            "method": "user",
+            "username": prompt_required("Username: "),
+            "password": getpass.getpass(Style.info("Password: ")),
+        }
+    else:
+        credentials = {
+            "method": "client",
+            "client_id": prompt_required("Client ID: "),
+            "client_secret": getpass.getpass(Style.info("Client secret: ")),
+        }
 
     try:
-        client = JamfClient(server_url, username, password)
+        client = JamfClient(server_url, credentials)
     except JamfError as error:
         print(f"\n  {CROSS} {Style.bad(str(error))}\n")
         sys.exit(1)
