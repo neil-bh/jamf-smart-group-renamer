@@ -102,12 +102,10 @@ Both are excluded by `.gitignore`.
 
 ## Contributing
 
-Issues and pull requests welcome. Useful areas:
+Issues and pull requests welcome. Open issues track the current backlog.
 
-- Blueprint scope support
-- Mobile device groups
-- Dry run mode
-- Bulk rename from a mapping file
+Run `python3 tests/test_offline.py` before opening a pull request. It needs no
+Jamf Pro instance and no credentials.
 
 ## Licence
 

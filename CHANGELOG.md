@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3 (unreleased)
+
+- Criteria references are now matched only on criteria of type Computer Group.
+  Matching on the value alone rewrote unrelated criteria, such as Computer Name
+  or Building, whose value happened to equal the group name ([#3](../../issues/3))
+- The cloned group now carries the site of the original. It was previously
+  created in no site ([#5](../../issues/5))
+- A new name is now checked against every computer group rather than smart groups
+  only, so a clash with a static group is rejected at the prompt instead of
+  failing later at creation ([#6](../../issues/6))
+- Added `tests/test_offline.py`, which exercises the criteria and site logic with
+  no Jamf Pro instance and no credentials
+  
 ## 0.2
 
 - Added API client authentication using a client ID and secret. Where Jamf Pro
