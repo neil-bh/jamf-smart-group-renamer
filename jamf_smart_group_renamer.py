@@ -29,11 +29,18 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-VERSION = "0.2"
+VERSION = "0.3-dev"
 TOOL_NAME = "Jamf Smart Group Renamer"
 
 CRITERION_FIELDS = ("name", "priority", "and_or", "search_type", "value",
                     "opening_paren", "closing_paren")
+
+# The criterion type Jamf Pro uses for computer group membership. Any other
+# criterion type may hold a value that happens to match a group name, and must
+# not be treated as a reference to that group. See issue #3.
+GROUP_CRITERION_NAME = "Computer Group"
+
+SITE_FIELDS = ("id", "name")
 
 SCOPED_TYPES = (
     ("Policy", "/JSSResource/policies", "policies", "policy"),
@@ -365,10 +372,19 @@ class SmartGroupRenamer:
     def __init__(self, client):
         self.client = client
 
-    def list_smart_groups(self):
+    def list_all_groups(self):
+        """Every computer group, smart and static.
+
+        Jamf Pro holds smart and static computer group names in one namespace,
+        so a new name has to be checked against both. See issue #6.
+        """
         data = self.client.get_json("/JSSResource/computergroups")
-        return [(group["id"], group["name"])
-                for group in data.get("computer_groups", []) if group.get("is_smart")]
+        return [(group["id"], group["name"], bool(group.get("is_smart")))
+                for group in data.get("computer_groups", [])]
+
+    def list_smart_groups(self):
+        return [(group_id, name)
+                for group_id, name, is_smart in self.list_all_groups() if is_smart]
 
     def fetch_group(self, group_id):
         return self.client.get_xml(f"/JSSResource/computergroups/id/{group_id}")
@@ -389,9 +405,25 @@ class SmartGroupRenamer:
         return "".join(parts)
 
     def find_criteria_references(self, group_xml, group_name):
+        """Return the indexes of criteria that reference the named group.
+
+        Only criteria of type Computer Group are considered. Matching on the
+        value alone rewrites unrelated criteria, such as Building or Department,
+        whose value happens to equal the group name.
+
+        search_type is deliberately not checked. The interface produces only
+        "member of" and "not member of" for this criterion type, but a criterion
+        created through the API may use something else, and missing a real
+        reference is the failure this check exists to prevent.
+        """
         root = ET.fromstring(group_xml)
-        return [index for index, criterion in enumerate(root.findall("./criteria/criterion"))
-                if (criterion.findtext("value") or "").strip() == group_name]
+        references = []
+        for index, criterion in enumerate(root.findall("./criteria/criterion")):
+            if (criterion.findtext("name") or "").strip() != GROUP_CRITERION_NAME:
+                continue
+            if (criterion.findtext("value") or "").strip() == group_name:
+                references.append(index)
+        return references
 
     def find_dependent_groups(self, group_id, group_name):
         dependents = []
@@ -458,10 +490,31 @@ class SmartGroupRenamer:
         return any(entry.findtext("id") == str(group_id)
                    for entry in scope.iter("computer_group"))
 
+    @staticmethod
+    def build_site(root):
+        """Rebuild the source group's site element.
+
+        Without this the clone is created in no site, which changes who can see
+        and scope it. See issue #5. Jamf Pro returns id -1 and name None for a
+        group in no site, and accepts that back unchanged.
+        """
+        site = root.find("./site")
+        if site is None:
+            return ""
+        parts = ["<site>"]
+        for field in SITE_FIELDS:
+            value = site.findtext(field)
+            if value is None:
+                continue
+            parts.append(f"<{field}>{xml_escape(value)}</{field}>")
+        parts.append("</site>")
+        return "".join(parts)
+
     def create_group(self, name, source_xml):
         root = ET.fromstring(source_xml)
         body = (f"<computer_group><name>{xml_escape(name)}</name>"
-                f"<is_smart>true</is_smart>{self.build_criteria(root)}</computer_group>")
+                f"<is_smart>true</is_smart>{self.build_site(root)}"
+                f"{self.build_criteria(root)}</computer_group>")
         status, response = self.client.post_xml("/JSSResource/computergroups/id/0", body)
         if status not in (200, 201):
             raise JamfError(f"Could not create the new group. {describe_failure(status, response)}")
@@ -595,7 +648,9 @@ def prompt_new_name(current_name, existing_names):
             print(Style.warn("  A name is required."))
             continue
         if new_name in existing_names:
-            print(Style.warn(f"  A smart group named \"{new_name}\" already exists."))
+            kind = existing_names[new_name]
+            print(Style.warn(f"  A {kind} computer group named \"{new_name}\" "
+                             f"already exists."))
             continue
         confirmation = ask("Type the new name again to confirm: ")
         if confirmation != new_name:
@@ -626,10 +681,15 @@ def rename_workflow(client):
     renamer = SmartGroupRenamer(client)
 
     heading("Select a group")
-    with Spinner("loading smart groups"):
-        smart_groups = renamer.list_smart_groups()
-    existing_names = {name for _, name in smart_groups}
-    print(f"  {len(smart_groups)} smart computer groups found.")
+    with Spinner("loading computer groups"):
+        all_groups = renamer.list_all_groups()
+    smart_groups = [(group_id, name)
+                    for group_id, name, is_smart in all_groups if is_smart]
+    existing_names = {name: ("smart" if is_smart else "static")
+                      for _, name, is_smart in all_groups}
+    static_count = len(all_groups) - len(smart_groups)
+    print(f"  {len(smart_groups)} smart computer groups found, "
+          f"{static_count} static.")
 
     search = ask("\nSearch by name (blank for all): ").lower()
     matches = [(gid, name) for gid, name in smart_groups if search in name.lower()]
